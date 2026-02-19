@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Scarcity: The Arena - Production Build</title>
+    
+    <meta name="description" content="Survive the swarm in Scarcity: The Arena. A fast-paced, free-to-play browser battle royale.">
+    <meta property="og:title" content="Scarcity: The Arena">
+    <meta property="og:description" content="I just survived the Arena! Can you beat my high score?">
+    <meta property="og:image" content="https://yourdomain.com/social-preview.jpg">
+
+    <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-XXXXXXXXXXXXXXXX" crossorigin="anonymous"></script>
+    <script>
+        window.adsbygoogle = window.adsbygoogle || [];
+        const adConfig = function(o){adsbygoogle.push(o);};
+    </script>
+
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;600;700&display=swap');
+        body { margin: 0; overflow: hidden; background-color: #0f0f13; font-family: 'Rajdhani', sans-serif; touch-action: none; user-select: none; -webkit-touch-callout: none; }
+        canvas { display: block; position: absolute; top: 0; left: 0; z-index: 1; outline: none; }
+        #root { position: relative; width: 100vw; height: 100vh; z-index: 10; pointer-events: none; }
+        .pointer-events-auto { pointer-events: auto; }
+        .glow-text { text-shadow: 0 0 10px rgba(255, 62, 62, 0.8); }
+        .touch-btn { background: rgba(255,255,255,0.1); border: 2px solid rgba(255,255,255,0.3); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; color: white; backdrop-filter: blur(4px); transition: background 0.1s; }
+        .touch-btn:active { background: rgba(255,255,255,0.4); }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        function App() {
+            const [gameState, setGameState] = useState('MENU'); 
+            const [endStats, setEndStats] = useState({ kills: 0, time: 0, rank: 0 });
+
+            // Refs for high-performance DOM manipulation
+            const inputRef = useRef({ w: false, a: false, s: false, d: false, shift: false, mouseX: 0, mouseY: 0, mouseDown: false, joyX: 0, joyY: 0, joyActive: false, mobileAttack: false, mobileDash: false });
+            const canvasRef = useRef(null);
+            const hpRef = useRef(null);
+            const staminaRef = useRef(null);
+            const hungerRef = useRef(null);
+            const aliveRef = useRef(null);
+            const messageRef = useRef(null);
+            const knobRef = useRef(null);
+            const tutorialRef = useRef(null);
+
+            // --- BULLETPROOF GLOBAL INPUT LISTENER ---
+            useEffect(() => {
+                const handleKeyDown = (e) => { const k = e.key.toLowerCase(); if (inputRef.current[k] !== undefined) inputRef.current[k] = true; };
+                const handleKeyUp = (e) => { const k = e.key.toLowerCase(); if (inputRef.current[k] !== undefined) inputRef.current[k] = false; };
+                const handleMouseMove = (e) => { inputRef.current.mouseX = e.clientX; inputRef.current.mouseY = e.clientY; };
+                const handleMouseDown = (e) => { if (e.button === 0) inputRef.current.mouseDown = true; };
+                const handleMouseUp = (e) => { if (e.button === 0) inputRef.current.mouseDown = false; };
+                
+                window.addEventListener('keydown', handleKeyDown);
+                window.addEventListener('keyup', handleKeyUp);
+                window.addEventListener('mousemove', handleMouseMove);
+                window.addEventListener('mousedown', handleMouseDown);
+                window.addEventListener('mouseup', handleMouseUp);
+                
+                return () => {
+                    window.removeEventListener('keydown', handleKeyDown);
+                    window.removeEventListener('keyup', handleKeyUp);
+                    window.removeEventListener('mousemove', handleMouseMove);
+                    window.removeEventListener('mousedown', handleMouseDown);
+                    window.removeEventListener('mouseup', handleMouseUp);
+                };
+            }, []);
+
+            // --- MOBILE TOUCH LOGIC ---
+            let joyCenter = { x: 0, y: 0 };
+            const handleJoyStart = (e) => {
+                const rect = e.target.getBoundingClientRect();
+                joyCenter.x = rect.left + rect.width / 2; joyCenter.y = rect.top + rect.height / 2;
+                inputRef.current.joyActive = true;
+                handleJoyMove(e);
+            };
+            const handleJoyMove = (e) => {
+                if (!inputRef.current.joyActive) return;
+                const touch = e.targetTouches[0];
+                let dx = touch.clientX - joyCenter.x, dy = touch.clientY - joyCenter.y;
+                const dist = Math.hypot(dx, dy), maxRadius = 40;
+                if (dist > maxRadius) { dx = (dx / dist) * maxRadius; dy = (dy / dist) * maxRadius; }
+                if (knobRef.current) knobRef.current.style.transform = `translate(${dx}px, ${dy}px)`;
+                inputRef.current.joyX = dx / maxRadius; inputRef.current.joyY = dy / maxRadius;
+            };
+            const handleJoyEnd = () => {
+                inputRef.current.joyActive = false; inputRef.current.joyX = 0; inputRef.current.joyY = 0;
+                if (knobRef.current) knobRef.current.style.transform = `translate(0px, 0px)`;
+            };
+
+            // --- GAME ENGINE LOOP ---
+            useEffect(() => {
+                if (gameState !== 'PLAYING' || !canvasRef.current) return;
+                
+                const canvas = canvasRef.current;
+                const ctx = canvas.getContext('2d', { alpha: false }); 
+                
+                const resize = () => { canvas.width = window.innerWidth; canvas.height = window.innerHeight; };
+                window.addEventListener('resize', resize);
+                resize();
+
+                const WORLD_SIZE = 3000;
+                let zoneRadius = WORLD_SIZE / 2;
+                let camera = { x: 0, y: 0, shake: 0 };
+                let entities = [], foods = [];
+                let player = null, gameTime = 0, aliveCount = 50;
+                
+                // Tutorial State Tracker
+                let tutStep = 0;
+                let tutTimer = 0;
+
+                const dist = (x1, y1, x2, y2) => Math.hypot(x2 - x1, y2 - y1);
+                const PARTICLE_POOL = Array.from({ length: 400 }, () => ({ active: false, x: 0, y: 0, vx: 0, vy: 0, life: 0, maxLife: 1, color: '' }));
+                
+                const spawnParticle = (x, y, color, speed, life) => {
+                    const p = PARTICLE_POOL.find(p => !p.active);
+                    if (!p) return;
+                    p.active = true; p.x = x; p.y = y; p.color = color;
+                    const angle = Math.random() * Math.PI * 2;
+                    p.vx = Math.cos(angle) * speed * Math.random(); 
+                    p.vy = Math.sin(angle) * speed * Math.random();
+                    p.life = life; p.maxLife = life;
+                };
+
+                class Food {
+                    constructor(x, y) { this.x = x; this.y = y; this.active = true; this.value = 30; }
+                    draw(ctx) {
+                        if (!this.active) return;
+                        ctx.fillStyle = '#ffaa00';
+                        ctx.beginPath(); ctx.arc(this.x | 0, this.y | 0, 6, 0, Math.PI * 2); ctx.fill(); 
+                    }
+                }
+
+                class Entity {
+                    constructor(x, y, isPlayer) {
+                        this.x = x; this.y = y; this.isPlayer = isPlayer;
+                        this.radius = 16; this.color = isPlayer ? '#00ccff' : '#ff3e3e';
+                        this.maxHp = isPlayer ? 150 : 100; this.hp = this.maxHp;
+                        this.speed = isPlayer ? 220 : 160;
+                        this.stamina = 100; this.hunger = 100;
+                        this.angle = 0; this.dead = false; this.kills = 0;
+                        this.dashCd = 0; this.attackCd = 0; this.hitFlash = 0;
+                        this.state = 'WANDER'; this.stateTimer = 0;
+                        
+                        // Action trackers for tutorial
+                        this.hasMoved = false;
+                        this.hasAttacked = false;
+                    }
+
+                    takeDamage(amount, attacker) {
+                        this.hp -= amount; this.hitFlash = 0.2;
+                        for(let i=0; i<8; i++) spawnParticle(this.x, this.y, '#ff0000', 150, 0.4);
+                        if (this.hp <= 0 && !this.dead) this.die(attacker);
+                    }
+
+                    die(attacker) {
+                        this.dead = true; aliveCount--;
+                        for(let i=0; i<25; i++) spawnParticle(this.x, this.y, this.color, 250, 0.8);
+                        for(let i=0; i<3; i++) foods.push(new Food(this.x + (Math.random()*40-20), this.y + (Math.random()*40-20)));
+                        
+                        if (attacker && attacker.isPlayer) {
+                            attacker.kills++;
+                            if(messageRef.current) {
+                                messageRef.current.innerText = `ELIMINATED TARGET (${aliveCount} REMAIN)`;
+                                messageRef.current.style.opacity = 1;
+                                setTimeout(() => { if(messageRef.current) messageRef.current.style.opacity = 0; }, 2000);
+                            }
+                        }
+
+                        if (this.isPlayer || (aliveCount === 1 && player && !player.dead)) {
+                            const finalRank = this.isPlayer ? aliveCount + 1 : 1;
+                            const finalKills = this.isPlayer ? this.kills : player.kills;
+                            setEndStats({ kills: finalKills, time: Math.floor(gameTime), rank: finalRank });
+                            setGameState('GAMEOVER');
+                        }
+                    }
+
+                    attack() {
+                        this.attackCd = 0.4; this.stamina -= 15;
+                        this.hasAttacked = true; // Trigger for tutorial
+                        const swingX = this.x + Math.cos(this.angle) * 35;
+                        const swingY = this.y + Math.sin(this.angle) * 35;
+                        
+                        spawnParticle(swingX, swingY, '#ffffff', 80, 0.15); 
+                        if (this.isPlayer) camera.shake = 5;
+
+                        entities.forEach(e => {
+                            if (e === this || e.dead) return;
+                            if (dist(swingX, swingY, e.x, e.y) < 50) {
+                                e.x += Math.cos(this.angle) * 25; e.y += Math.sin(this.angle) * 25;
+                                e.takeDamage(30, this);
+                                if (this.isPlayer) camera.shake = 12;
+                            }
+                        });
+                    }
+
+                    update(dt) {
+                        if (this.hitFlash > 0) this.hitFlash -= dt;
+                        if (this.dashCd > 0) this.dashCd -= dt;
+                        if (this.attackCd > 0) this.attackCd -= dt;
+                        
+                        this.hunger -= 0.8 * dt; 
+                        if (this.hunger <= 0) { this.hunger = 0; this.takeDamage(2 * dt, null); }
+                        if (this.stamina < 100) this.stamina += 15 * dt;
+
+                        let dx = 0, dy = 0;
+                        const input = inputRef.current;
+
+                        if (this.isPlayer) {
+                            if (input.w) dy -= 1; if (input.s) dy += 1;
+                            if (input.a) dx -= 1; if (input.d) dx += 1;
+                            
+                            if (input.joyActive) {
+                                dx = input.joyX; dy = input.joyY;
+                                this.angle = Math.atan2(dy, dx);
+                            } else {
+                                const worldMouseX = input.mouseX + camera.x;
+                                const worldMouseY = input.mouseY + camera.y;
+                                this.angle = Math.atan2(worldMouseY - this.y, worldMouseX - this.x);
+                            }
+
+                            if ((input.shift || input.mobileDash) && this.dashCd <= 0 && this.stamina >= 30) {
+                                this.dashCd = 1.0; this.stamina -= 30; dx *= 6; dy *= 6; camera.shake = 4;
+                                for(let i=0; i<6; i++) spawnParticle(this.x, this.y, '#fff', 50, 0.3);
+                            }
+                            if ((input.mouseDown || input.mobileAttack) && this.attackCd <= 0 && this.stamina >= 15) {
+                                this.attack();
+                                input.mobileAttack = false; 
+                            }
+
+                        } else {
+                            this.stateTimer -= dt;
+                            let nearestFood = null, nearestEnemy = null;
+                            let minFoodD = Infinity, minEnemyD = Infinity;
+
+                            foods.forEach(f => {
+                                if(!f.active) return;
+                                const d = dist(this.x, this.y, f.x, f.y);
+                                if(d < minFoodD && d < 500) { minFoodD = d; nearestFood = f; }
+                            });
+                            entities.forEach(e => {
+                                if(e === this || e.dead) return;
+                                const d = dist(this.x, this.y, e.x, e.y);
+                                if(d < minEnemyD && d < 400) { minEnemyD = d; nearestEnemy = e; }
+                            });
+
+                            if (dist(0, 0, this.x, this.y) > zoneRadius * 0.9) {
+                                this.state = 'SCAVENGE'; this.angle = Math.atan2(-this.y, -this.x);
+                            } else if (this.hunger < 50 && nearestFood) {
+                                this.state = 'WANDER'; this.angle = Math.atan2(nearestFood.y - this.y, nearestFood.x - this.x);
+                            } else if (nearestEnemy) {
+                                if (this.hp >= nearestEnemy.hp || this.hunger < 20) {
+                                    this.state = 'CHASE'; this.angle = Math.atan2(nearestEnemy.y - this.y, nearestEnemy.x - this.x);
+                                    if (minEnemyD < 45 && this.attackCd <= 0) this.attack();
+                                } else {
+                                    this.state = 'FLEE'; this.angle = Math.atan2(this.y - nearestEnemy.y, this.x - nearestEnemy.x);
+                                }
+                            } else if (this.stateTimer <= 0) {
+                                this.state = 'WANDER'; this.angle = Math.random() * Math.PI * 2; this.stateTimer = 3;
+                            }
+                            dx = Math.cos(this.angle); dy = Math.sin(this.angle);
+                        }
+
+                        if (dx !== 0 || dy !== 0) {
+                            if (this.isPlayer) this.hasMoved = true; // Trigger for tutorial
+                            const len = Math.hypot(dx, dy);
+                            const multiplier = (len > 1) ? (1 / len) : 1; 
+                            this.x += dx * multiplier * this.speed * dt;
+                            this.y += dy * multiplier * this.speed * dt;
+                        }
+
+                        foods.forEach(f => {
+                            if (f.active && dist(this.x, this.y, f.x, f.y) < this.radius + 10) {
+                                f.active = false;
+                                this.hunger = Math.min(100, this.hunger + f.value);
+                                this.hp = Math.min(this.maxHp, this.hp + 15);
+                                spawnParticle(this.x, this.y, '#00ff00', 60, 0.4);
+                            }
+                        });
+
+                        if (dist(0, 0, this.x, this.y) > zoneRadius) this.takeDamage(15 * dt, null);
+                    }
+
+                    draw(ctx) {
+                        ctx.save();
+                        ctx.translate(this.x | 0, this.y | 0);
+                        ctx.rotate(this.angle);
+                        
+                        ctx.fillStyle = this.hitFlash > 0 ? '#ffffff' : this.color;
+                        ctx.beginPath(); ctx.arc(0, 0, this.radius, 0, Math.PI*2); ctx.fill();
+                        
+                        ctx.fillStyle = '#ffffff';
+                        ctx.fillRect(this.radius - 2, -14, 12, 8);
+                        ctx.fillRect(this.radius + 2, -4, 18, 8);
+                        ctx.restore();
+
+                        if (!this.isPlayer && this.hp < this.maxHp) {
+                            ctx.fillStyle = '#333'; ctx.fillRect((this.x - 15) | 0, (this.y - 25) | 0, 30, 4);
+                            ctx.fillStyle = '#ff0000'; ctx.fillRect((this.x - 15) | 0, (this.y - 25) | 0, 30 * (this.hp/this.maxHp), 4);
+                        }
+                    }
+                }
+
+                // Reset World
+                player = new Entity(0, 0, true);
+                entities.push(player);
+                for(let i=0; i<49; i++) {
+                    const angle = Math.random() * Math.PI * 2;
+                    const r = Math.random() * (zoneRadius - 200);
+                    entities.push(new Entity(Math.cos(angle)*r, Math.sin(angle)*r, false));
+                }
+                for(let i=0; i<100; i++) foods.push(new Food((Math.random()-0.5)*WORLD_SIZE*0.8, (Math.random()-0.5)*WORLD_SIZE*0.8));
+
+                let lastTime = performance.now();
+                let animationFrameId;
+
+                const gameLoop = (now) => {
+                    const dt = Math.min((now - lastTime) / 1000, 0.05); 
+                    lastTime = now;
+                    gameTime += dt;
+
+                    // --- TUTORIAL LOGIC ---
+                    if (player && !player.dead && tutorialRef.current) {
+                        const isMobile = window.innerWidth <= 768;
+                        if (tutStep === 0) {
+                            tutorialRef.current.innerText = isMobile ? "USE JOYSTICK TO MOVE" : "USE W, A, S, D TO MOVE";
+                            if (player.hasMoved) tutStep = 1;
+                        } else if (tutStep === 1) {
+                            tutorialRef.current.innerText = isMobile ? "TAP ATTACK TO SWING WEAPON" : "LEFT CLICK TO ATTACK";
+                            if (player.hasAttacked) tutStep = 2;
+                        } else if (tutStep === 2) {
+                            tutorialRef.current.innerText = "COLLECT ORANGE DOTS TO CURE HUNGER";
+                            tutTimer += dt;
+                            if (tutTimer > 6) { tutStep = 3; tutTimer = 0; }
+                        } else if (tutStep === 3) {
+                            tutorialRef.current.innerText = "STAY INSIDE THE RED ZONE!";
+                            tutTimer += dt;
+                            if (tutTimer > 4) { tutStep = 4; tutorialRef.current.style.opacity = '0'; }
+                        }
+                    }
+
+                    zoneRadius -= 0.1; 
+                    if (Math.random() < 0.03) foods.push(new Food((Math.random()-0.5)*zoneRadius*2, (Math.random()-0.5)*zoneRadius*2));
+                    
+                    entities.forEach(e => !e.dead && e.update(dt));
+                    PARTICLE_POOL.forEach(p => {
+                        if (!p.active) return;
+                        p.x += p.vx * dt; p.y += p.vy * dt; p.life -= dt;
+                        p.vx *= 0.95; p.vy *= 0.95; 
+                        if (p.life <= 0) p.active = false;
+                    });
+
+                    entities = entities.filter(e => !e.dead);
+                    foods = foods.filter(f => f.active);
+
+                    if (player && !player.dead) {
+                        camera.x += (player.x - canvas.width / 2 - camera.x) * 0.15;
+                        camera.y += (player.y - canvas.height / 2 - camera.y) * 0.15;
+                    }
+                    if (camera.shake > 0) {
+                        camera.x += (Math.random() - 0.5) * camera.shake;
+                        camera.y += (Math.random() - 0.5) * camera.shake;
+                        camera.shake -= dt * 40;
+                    }
+
+                    // Draw Background
+                    ctx.fillStyle = '#0f0f13';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    
+                    ctx.save();
+                    ctx.translate(-(camera.x | 0), -(camera.y | 0));
+
+                    ctx.strokeStyle = '#1a1a24'; ctx.lineWidth = 2;
+                    const gs = 150;
+                    const sx = Math.floor(camera.x / gs) * gs;
+                    const sy = Math.floor(camera.y / gs) * gs;
+                    ctx.beginPath();
+                    for(let x=sx; x<camera.x+canvas.width+gs; x+=gs) { ctx.moveTo(x, sy); ctx.lineTo(x, camera.y+canvas.height+gs); }
+                    for(let y=sy; y<camera.y+canvas.height+gs; y+=gs) { ctx.moveTo(sx, y); ctx.lineTo(camera.x+canvas.width+gs, y); }
+                    ctx.stroke();
+
+                    ctx.beginPath(); ctx.arc(0, 0, zoneRadius, 0, Math.PI * 2);
+                    ctx.strokeStyle = '#ff3e3e'; ctx.lineWidth = 4; ctx.stroke();
+                    ctx.fillStyle = 'rgba(255, 0, 0, 0.1)';
+                    ctx.beginPath(); ctx.arc(0, 0, WORLD_SIZE*2, 0, Math.PI*2); ctx.arc(0, 0, zoneRadius, 0, Math.PI*2, true); ctx.fill();
+
+                    foods.forEach(f => f.draw(ctx));
+                    entities.forEach(e => e.draw(ctx));
+                    PARTICLE_POOL.forEach(p => {
+                        if (!p.active) return;
+                        ctx.globalAlpha = p.life / p.maxLife; ctx.fillStyle = p.color;
+                        ctx.beginPath(); ctx.arc(p.x | 0, p.y | 0, 4, 0, Math.PI*2); ctx.fill();
+                    });
+                    ctx.globalAlpha = 1.0;
+                    ctx.restore();
+
+                    // Update UI safely
+                    if (player && !player.dead) {
+                        if(hpRef.current) hpRef.current.style.width = `${Math.max(0, (player.hp/player.maxHp)*100)}%`;
+                        if(staminaRef.current) staminaRef.current.style.width = `${Math.max(0, player.stamina)}%`;
+                        if(hungerRef.current) hungerRef.current.style.width = `${Math.max(0, player.hunger)}%`;
+                        if(aliveRef.current) aliveRef.current.innerText = aliveCount;
+                    }
+
+                    animationFrameId = requestAnimationFrame(gameLoop);
+                };
+
+                animationFrameId = requestAnimationFrame(gameLoop);
+
+                return () => {
+                    cancelAnimationFrame(animationFrameId);
+                    window.removeEventListener('resize', resize);
+                };
+            }, [gameState]);
+
+            return (
+                <div className="w-full h-full flex flex-col justify-between p-4 md:p-6 font-bold tracking-wider text-gray-200">
+                    
+                    {gameState === 'PLAYING' && (
+                        <>
+                            <canvas ref={canvasRef} className="absolute top-0 left-0 -z-10 block pointer-events-none"></canvas>
+
+                            {/* HUD */}
+                            <div className="flex justify-between items-start pointer-events-none">
+                                <div className="flex flex-col gap-2 w-48 md:w-64 drop-shadow-md bg-black/40 p-3 rounded-lg backdrop-blur-sm pointer-events-auto">
+                                    <div>
+                                        <div className="flex justify-between text-xs mb-1"><span>HEALTH</span></div>
+                                        <div className="h-3 bg-gray-900 border border-gray-600 rounded overflow-hidden">
+                                            <div ref={hpRef} className="h-full bg-red-500 transition-all duration-75"></div>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div className="flex justify-between text-xs mb-1"><span>STAMINA</span></div>
+                                        <div className="h-2 bg-gray-900 border border-gray-600 rounded overflow-hidden">
+                                            <div ref={staminaRef} className="h-full bg-green-400 transition-all duration-75"></div>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <div className="flex justify-between text-xs mb-1"><span>HUNGER</span></div>
+                                        <div className="h-2 bg-gray-900 border border-gray-600 rounded overflow-hidden">
+                                            <div ref={hungerRef} className="h-full bg-orange-400 transition-all duration-75"></div>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="flex flex-col items-end gap-3 pointer-events-auto">
+                                    <div className="text-right bg-black/40 p-3 rounded-lg backdrop-blur-sm">
+                                        <div className="text-2xl drop-shadow-md">ALIVE: <span ref={aliveRef} className="text-red-500">50</span></div>
+                                        <div className="text-sm text-gray-400">ZONE SHRINKING</div>
+                                    </div>
+                                    <div className="bg-black/80 border border-gray-700 px-4 py-2 rounded-full flex items-center gap-2 cursor-pointer hover:bg-gray-800 transition shadow-[0_0_10px_rgba(0,255,0,0.2)]">
+                                        <div className="w-3 h-3 rounded-full bg-green-500 animate-pulse"></div>
+                                        <span className="text-xs md:text-sm">PEER CONNECT</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Center Event Messages */}
+                            <div ref={messageRef} className="absolute top-1/4 left-1/2 -translate-x-1/2 text-xl md:text-3xl text-white glow-text opacity-0 transition-opacity duration-300 pointer-events-none"></div>
+
+                            {/* IN-GAME TUTORIAL OVERLAY */}
+                            <div ref={tutorialRef} className="absolute top-1/3 left-1/2 -translate-x-1/2 text-2xl md:text-4xl text-white font-black tracking-widest glow-text text-center pointer-events-none transition-opacity duration-1000"></div>
+
+                            {/* Mobile Controls */}
+                            <div className="absolute inset-0 z-20 pointer-events-none md:hidden">
+                                <div className="absolute bottom-8 left-8 w-32 h-32 touch-btn pointer-events-auto opacity-70" onTouchStart={handleJoyStart} onTouchMove={handleJoyMove} onTouchEnd={handleJoyEnd}>
+                                    <div ref={knobRef} className="w-12 h-12 bg-white rounded-full shadow-[0_0_10px_rgba(255,255,255,0.5)]"></div>
+                                </div>
+                                <div className="absolute bottom-8 right-32 w-20 h-20 touch-btn pointer-events-auto text-sm opacity-80" onTouchStart={(e) => { e.preventDefault(); inputRef.current.mobileDash = true; }} onTouchEnd={(e) => { e.preventDefault(); inputRef.current.mobileDash = false; }}>DASH</div>
+                                <div className="absolute bottom-20 right-8 w-24 h-24 touch-btn pointer-events-auto text-lg opacity-90 border-red-500 shadow-[0_0_15px_rgba(255,0,0,0.3)]" onTouchStart={(e) => { e.preventDefault(); inputRef.current.mobileAttack = true; }} onTouchEnd={(e) => { e.preventDefault(); inputRef.current.mobileAttack = false; }}>ATTACK</div>
+                            </div>
+                        </>
+                    )}
+
+                    {gameState === 'MENU' && (
+                        <div className="absolute inset-0 bg-black/85 backdrop-blur-md flex flex-col items-center justify-center pointer-events-auto z-50">
+                            <h1 className="text-6xl md:text-8xl font-black text-white mb-2 tracking-widest glow-text text-center">SCARCITY</h1>
+                            <p className="text-gray-400 text-base md:text-lg mb-8 max-w-lg text-center px-4">Resources are scarce. The strong survive. Hunt for food. Eliminate rivals. Trust no one.</p>
+                            <button onClick={() => setGameState('PLAYING')} className="border-2 border-white text-white px-10 py-4 text-2xl hover:bg-white hover:text-black transition-all duration-300 tracking-widest shadow-[0_0_15px_rgba(255,255,255,0.2)] hover:shadow-[0_0_25px_rgba(255,255,255,0.8)]">ENTER ARENA</button>
+                        </div>
+                    )}
+
+                    {gameState === 'GAMEOVER' && (
+                        <div className="absolute inset-0 bg-black/95 backdrop-blur-md flex flex-col items-center justify-center pointer-events-auto z-50">
+                            <h1 className={`text-5xl md:text-7xl font-black tracking-widest mb-6 ${endStats.rank === 1 ? 'text-green-500 drop-shadow-[0_0_15px_rgba(0,255,0,0.8)]' : 'text-red-500 drop-shadow-[0_0_15px_rgba(255,0,0,0.8)]'}`}>{endStats.rank === 1 ? 'VICTORY' : 'ELIMINATED'}</h1>
+                            <div className="text-xl md:text-2xl text-gray-200 flex flex-col items-center gap-3 mb-10 bg-gray-900/50 p-6 rounded-xl border border-gray-800">
+                                <p className="font-bold">Rank: <span className="text-white">#{endStats.rank}</span> / 50</p>
+                                <p className="font-bold">Eliminations: <span className="text-red-400">{endStats.kills}</span></p>
+                                <p className="font-bold">Time Survived: <span className="text-green-400">{endStats.time}s</span></p>
+                            </div>
+                            <button onClick={() => setGameState('PLAYING')} className="border-2 border-red-500 text-red-500 px-10 py-4 text-xl md:text-2xl hover:bg-red-500 hover:text-white transition-all duration-300 tracking-widest uppercase font-black">TRY AGAIN</button>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
